@@ -1,0 +1,16 @@
+whisper:
+  model: openai/whisper-medium
+  layer_low: 4
+  layer_high: 20
+xlsr:
+  model: facebook/wav2vec2-large-xlsr-53
+  layer_low: 4
+  layer_mid: 10
+  layer_high: 18
+acoustics:
+  max_formant_female: 5000
+  max_formant_male: 4500
+  n_formants: 5
+normalise:
+  pca_vis_dims: 2
+  pca_cluster_dims: 50

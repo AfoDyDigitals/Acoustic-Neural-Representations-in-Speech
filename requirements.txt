@@ -1,0 +1,13 @@
+dvc
+pandas
+numpy
+scipy
+statsmodels
+pingouin
+scikit-learn
+matplotlib
+seaborn
+praat-parselmouth
+transformers
+torch
+torchaudio

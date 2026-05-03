@@ -1,0 +1,34 @@
+stages:
+  parse_corpus:
+    cmd: python stages/parse_corpus.py
+    deps: [data/raw]
+    outs: [data/processed/phonemes.csv]
+  extract_acoustics:
+    cmd: python stages/extract_acoustics.py
+    deps: [data/processed/phonemes.csv]
+    outs: [data/processed/features_acoustic.csv]
+  extract_neural_whisper:
+    cmd: python stages/extract_neural_whisper.py
+    deps: [data/processed/phonemes.csv]
+    outs: [data/processed/features_whisper.npz]
+  extract_neural_xlsr:
+    cmd: python stages/extract_neural_xlsr.py
+    deps: [data/processed/phonemes.csv]
+    outs: [data/processed/features_xlsr.npz]
+  normalise:
+    cmd: python stages/normalise.py
+    deps:
+      - data/processed/features_acoustic.csv
+      - data/processed/features_whisper.npz
+      - data/processed/features_xlsr.npz
+    outs:
+      - data/processed/features_acoustic_norm.csv
+      - data/processed/features_whisper_pca.npz
+      - data/processed/features_xlsr_pca.npz
+  analyse:
+    cmd: python stages/analyse.py
+    deps:
+      - data/processed/features_acoustic_norm.csv
+      - data/processed/features_whisper_pca.npz
+      - data/processed/features_xlsr_pca.npz
+    outs: [results]
