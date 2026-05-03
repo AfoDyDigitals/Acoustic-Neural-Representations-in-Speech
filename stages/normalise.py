@@ -10,15 +10,18 @@ D_CLU = params["normalise"]["pca_cluster_dims"]
 
 # --- Lobanov normalisation on acoustics ---
 df = pd.read_csv("data/processed/features_acoustic.csv")
+speaker_ids = df["speaker_id"].values
 
 def lobanov(group):
     for col in ["F1","F2","F3"]:
         group[f"{col}_lob"] = (group[col] - group[col].mean()) / group[col].std()
     return group
 
-df = df.groupby("speaker_id", group_keys=False).apply(lobanov)
+df = df.groupby("speaker_id", group_keys=False).apply(lobanov).reset_index(drop=True)
+df.insert(0, "speaker_id", speaker_ids)
 df.to_csv("data/processed/features_acoustic_norm.csv", index=False)
-print("Lobanov done:", df[["F1_lob","F2_lob"]].describe().round(3).to_string())
+print("Columns:", df.columns.tolist())
+print("Lobanov done.")
 
 # --- PCA on neural embeddings ---
 for model, path in [("whisper","data/processed/features_whisper.npz"),
