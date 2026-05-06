@@ -435,3 +435,85 @@ for name, arr in [("Acoustic",ac),("Whisper",w_arr),("XLS-R",x_arr)]:
     plt.close()
 
 print("\nSection 6.2 complete.")
+
+# =============================================================================
+# SECTION 7 — Linear Mixed-Effects Models
+# =============================================================================
+import statsmodels.formula.api as smf
+from statsmodels.stats.anova import anova_lm
+
+df = pd.read_csv("data/processed/features_acoustic_norm.csv")
+VOWELS = ['a','e','i','o','u','y']
+
+print("\n--- Linear Mixed-Effects Models ---")
+
+results_lme = []
+for ph in VOWELS:
+    sub = df[df.phoneme==ph].copy()
+    sub["L2"] = (sub.l1_status=="ru").astype(int)
+    sub["Male"] = (sub.gender=="m").astype(int)
+    if len(sub) < 20: continue
+
+    # 1. Null model
+    m0 = smf.mixedlm("F1_lob ~ 1", sub, groups=sub["speaker_id"]).fit(reml=True, method="lbfgs")
+
+    # 2. Main effects
+    m1 = smf.mixedlm("F1_lob ~ L2 + Male", sub, groups=sub["speaker_id"]).fit(reml=True, method="lbfgs")
+
+    # 3. Full model with interaction
+    m2 = smf.mixedlm("F1_lob ~ L2 * Male", sub, groups=sub["speaker_id"]).fit(reml=True, method="lbfgs")
+
+    # ICC from null model
+    var_u = float(m0.cov_re.iloc[0,0])
+    var_e = m0.scale
+    icc   = var_u / (var_u + var_e)
+
+    # marginal R2 (variance explained by fixed effects)
+    var_fixed = np.var(m1.fittedvalues - m1.resid)
+    var_total = var_u + var_e
+    r2_marginal = var_fixed / var_total
+
+    results_lme.append({
+        "phoneme": ph,
+        "ICC": round(icc, 3),
+        "R2_marginal": round(r2_marginal, 3),
+        "L2_coef": round(m1.params.get("L2", np.nan), 3),
+        "L2_pval": round(m1.pvalues.get("L2", np.nan), 4),
+        "Male_coef": round(m1.params.get("Male", np.nan), 3),
+        "Male_pval": round(m1.pvalues.get("Male", np.nan), 4),
+        "interaction_pval": round(m2.pvalues.get("L2:Male", np.nan), 4),
+        "AIC_null": round(m0.aic, 1),
+        "AIC_main": round(m1.aic, 1),
+        "AIC_full": round(m2.aic, 1)
+    })
+
+lme_df = pd.DataFrame(results_lme)
+lme_df.to_csv("results/lme_results.csv", index=False)
+print(lme_df.to_string())
+
+# --- LME on Neural PC1 ---
+print("\n--- LME on Whisper PC1 (vowel /a/) ---")
+w_pca = np.load("data/processed/features_whisper_pca.npz")
+x_pca = np.load("data/processed/features_xlsr_pca.npz")
+
+for ph in ["a","i"]:
+    mask_ph = df.phoneme==ph
+    sub = df[mask_ph].copy().reset_index(drop=True)
+    sub["L2"]   = (sub.l1_status=="ru").astype(int)
+    sub["Male"] = (sub.gender=="m").astype(int)
+    sub["PC1_w"] = w_pca["layer_high_clus"][mask_ph.values, 0]
+    sub["PC1_x"] = x_pca["high_clus"][mask_ph.values, 0]
+
+    for pc_col, model_name in [("PC1_w","Whisper"),("PC1_x","XLS-R")]:
+        m = smf.mixedlm(f"{pc_col} ~ L2 + Male", sub,
+                        groups=sub["speaker_id"]).fit(reml=True, method="lbfgs")
+        var_u = float(m.cov_re.iloc[0,0])
+        var_e = m.scale
+        icc   = var_u / (var_u + var_e)
+        var_fixed = np.var(m.fittedvalues - m.resid)
+        r2_m = var_fixed / (var_u + var_e)
+        print(f"  /{ph}/ {model_name}: ICC={icc:.3f} R2_marginal={r2_m:.3f} "
+              f"L2_coef={m.params.get('L2',np.nan):.3f} "
+              f"L2_p={m.pvalues.get('L2',np.nan):.4f}")
+
+print("\nSection 7 complete.")
