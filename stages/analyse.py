@@ -155,3 +155,71 @@ for name, key in [("Whisper-high","layer_high_clus"),("XLS-R-high","high_clus")]
     print(f"  {name}: within={np.mean(within):.3f} between={np.mean(between):.3f} ratio={np.mean(within)/np.mean(between):.3f}")
 
 print("\nSection 5.2 complete.")
+
+# =============================================================================
+# SECTION 5.3 — Representational Similarity Matrix + Mantel Test
+# =============================================================================
+from scipy.spatial.distance import cdist
+from scipy.stats import spearmanr
+
+df = pd.read_csv("data/processed/features_acoustic_norm.csv")
+VOWELS_PLOT = ['a','e','i','o','u','y']
+mask = df.phoneme.isin(VOWELS_PLOT)
+dv = df[mask].copy().reset_index(drop=True)
+
+# per-phoneme mean vectors
+def get_centroids(matrix, labels, vowels):
+    return np.array([matrix[labels==p].mean(axis=0) for p in vowels])
+
+labs = dv.phoneme.values
+
+# acoustic centroids (F1_lob, F2_lob)
+ac = dv[["F1_lob","F2_lob"]].values
+ac_cent = get_centroids(ac, labs, VOWELS_PLOT)
+D_ac = cdist(ac_cent, ac_cent, metric="euclidean")
+
+# neural centroids
+w_pca = np.load("data/processed/features_whisper_pca.npz")
+x_pca = np.load("data/processed/features_xlsr_pca.npz")
+
+w_high = w_pca["layer_high_clus"][mask.values]
+x_high = x_pca["high_clus"][mask.values]
+
+w_cent = get_centroids(w_high, labs, VOWELS_PLOT)
+x_cent = get_centroids(x_high, labs, VOWELS_PLOT)
+
+D_wh = cdist(w_cent, w_cent, metric="cosine")
+D_xl = cdist(x_cent, x_cent, metric="cosine")
+
+def mantel(D1, D2):
+    n = D1.shape[0]
+    idx = np.triu_indices(n, k=1)
+    r, p = spearmanr(D1[idx], D2[idx])
+    return r, p
+
+r_ac_wh, p_ac_wh = mantel(D_ac, D_wh)
+r_ac_xl, p_ac_xl = mantel(D_ac, D_xl)
+r_wh_xl, p_wh_xl = mantel(D_wh, D_xl)
+
+print("\nMantel Test Results:")
+print(f"  Acoustic vs Whisper:  r={r_ac_wh:.3f} p={p_ac_wh:.3f}")
+print(f"  Acoustic vs XLS-R:    r={r_ac_xl:.3f} p={p_ac_xl:.3f}")
+print(f"  Whisper  vs XLS-R:    r={r_wh_xl:.3f} p={p_wh_xl:.3f}")
+
+# save RSM heatmaps
+fig, axes = plt.subplots(1,3, figsize=(15,4))
+for ax, D, title in zip(axes,
+    [D_ac, D_wh, D_xl],
+    ["Acoustic","Whisper-high","XLS-R-high"]):
+    im = ax.imshow(D, cmap="viridis")
+    ax.set_xticks(range(len(VOWELS_PLOT)))
+    ax.set_yticks(range(len(VOWELS_PLOT)))
+    ax.set_xticklabels(VOWELS_PLOT)
+    ax.set_yticklabels(VOWELS_PLOT)
+    ax.set_title(f"RSM: {title}")
+    plt.colorbar(im, ax=ax)
+plt.tight_layout()
+plt.savefig("results/rsm_comparison.png", dpi=150)
+plt.close()
+print("RSM heatmap saved.")
+print("\nSection 5.3 complete.")
