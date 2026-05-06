@@ -223,3 +223,102 @@ plt.savefig("results/rsm_comparison.png", dpi=150)
 plt.close()
 print("RSM heatmap saved.")
 print("\nSection 5.3 complete.")
+
+# =============================================================================
+# SECTION 6.1 — Statistical Tests: L1 vs L2 Group Comparisons
+# =============================================================================
+from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu
+from statsmodels.stats.multitest import multipletests
+
+df = pd.read_csv("data/processed/features_acoustic_norm.csv")
+VOWELS = ['a','e','i','o','u','y']
+
+print("\n--- L1 vs L2 on Acoustic Features ---")
+results = []
+for ph in VOWELS:
+    for feat in ["F1_lob","F2_lob"]:
+        fr = df[(df.phoneme==ph)&(df.l1_status=="fr")][feat].dropna()
+        ru = df[(df.phoneme==ph)&(df.l1_status=="ru")][feat].dropna()
+        if len(fr)<5 or len(ru)<5: continue
+
+        # normality
+        _, p_norm_fr = shapiro(fr.sample(min(len(fr),50), random_state=42))
+        _, p_norm_ru = shapiro(ru.sample(min(len(ru),50), random_state=42))
+        normal = p_norm_fr>0.05 and p_norm_ru>0.05
+
+        # homogeneity of variance
+        _, p_lev = levene(fr, ru)
+        equal_var = p_lev > 0.05
+
+        # choose test
+        if normal:
+            stat, p = ttest_ind(fr, ru, equal_var=equal_var)
+            test = "t-test"
+        else:
+            stat, p = mannwhitneyu(fr, ru, alternative="two-sided")
+            test = "MWU"
+
+        results.append({"phoneme":ph,"feature":feat,"test":test,
+                        "stat":round(stat,3),"p":round(p,4),
+                        "mean_fr":round(fr.mean(),3),"mean_ru":round(ru.mean(),3),
+                        "normal":normal})
+
+results_df = pd.DataFrame(results)
+
+# BH correction
+_, p_corrected, _, _ = multipletests(results_df.p, method="fdr_bh")
+results_df["p_corrected"] = p_corrected.round(4)
+results_df["significant"] = results_df.p_corrected < 0.05
+
+results_df.to_csv("results/l1_l2_acoustic_tests.csv", index=False)
+print(results_df[["phoneme","feature","test","mean_fr","mean_ru","p","p_corrected","significant"]].to_string())
+
+# --- Gender residual effect after Lobanov ---
+print("\n--- Residual Gender Effect After Lobanov ---")
+for feat in ["F1_lob","F2_lob"]:
+    f_vals = df[df.gender=="f"][feat].dropna()
+    m_vals = df[df.gender=="m"][feat].dropna()
+    stat, p = mannwhitneyu(f_vals, m_vals, alternative="two-sided")
+    print(f"  {feat}: MWU stat={stat:.0f} p={p:.4f} {'significant' if p<0.05 else 'not significant'}")
+
+# --- L1 vs L2 on Neural Representations (permutation test) ---
+print("\n--- Permutation Test: L1 vs L2 on Neural Representations ---")
+from sklearn.metrics.pairwise import cosine_distances
+
+w_pca = np.load("data/processed/features_whisper_pca.npz")
+x_pca = np.load("data/processed/features_xlsr_pca.npz")
+
+df_reset = df.reset_index(drop=True)
+perm_results = []
+
+for model_name, arr in [("Whisper-high", w_pca["layer_high_clus"]),
+                         ("XLS-R-high",   x_pca["high_clus"])]:
+    for ph in VOWELS:
+        mask_ph = df_reset.phoneme == ph
+        if mask_ph.sum() < 10: continue
+        sub = arr[mask_ph.values]
+        labs = df_reset[mask_ph].l1_status.values
+
+        fr_cent = sub[labs=="fr"].mean(axis=0)
+        ru_cent = sub[labs=="ru"].mean(axis=0)
+        obs = cosine_distances([fr_cent],[ru_cent])[0,0]
+
+        # permutation
+        np.random.seed(42)
+        null = []
+        for _ in range(1000):
+            perm = np.random.permutation(labs)
+            c1 = sub[perm=="fr"].mean(axis=0)
+            c2 = sub[perm=="ru"].mean(axis=0)
+            null.append(cosine_distances([c1],[c2])[0,0])
+        p_perm = (np.array(null) >= obs).mean()
+        perm_results.append({"model":model_name,"phoneme":ph,
+                             "obs_dist":round(obs,4),"p_perm":round(p_perm,4)})
+
+perm_df = pd.DataFrame(perm_results)
+_, p_corr, _, _ = multipletests(perm_df.p_perm, method="fdr_bh")
+perm_df["p_corrected"] = p_corr.round(4)
+perm_df["significant"] = perm_df.p_corrected < 0.05
+perm_df.to_csv("results/l1_l2_neural_tests.csv", index=False)
+print(perm_df.to_string())
+print("\nSection 6.1 complete.")
