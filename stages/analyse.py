@@ -322,3 +322,116 @@ perm_df["significant"] = perm_df.p_corrected < 0.05
 perm_df.to_csv("results/l1_l2_neural_tests.csv", index=False)
 print(perm_df.to_string())
 print("\nSection 6.1 complete.")
+
+# =============================================================================
+# SECTION 6.2 — Inter-phoneme Distance Matrices + Classifier
+# =============================================================================
+from sklearn.covariance import EmpiricalCovariance
+from sklearn.neighbors import NearestCentroid
+from sklearn.model_selection import LeaveOneGroupOut
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+from scipy.stats import spearmanr
+from sklearn.metrics.pairwise import cosine_distances
+import warnings
+warnings.filterwarnings("ignore")
+
+df = pd.read_csv("data/processed/features_acoustic_norm.csv")
+VOWELS = ['a','e','i','o','u','y']
+mask = df.phoneme.isin(VOWELS)
+dv = df[mask].copy().reset_index(drop=True)
+labs = dv.phoneme.values
+
+w_pca = np.load("data/processed/features_whisper_pca.npz")
+x_pca = np.load("data/processed/features_xlsr_pca.npz")
+
+ac    = dv[["F1_lob","F2_lob"]].values
+w_arr = w_pca["layer_high_clus"][mask.values]
+x_arr = x_pca["high_clus"][mask.values]
+
+def get_centroids(arr, labs, vowels):
+    return np.array([arr[labs==p].mean(axis=0) for p in vowels])
+
+ac_cent = get_centroids(ac,    labs, VOWELS)
+w_cent  = get_centroids(w_arr, labs, VOWELS)
+x_cent  = get_centroids(x_arr, labs, VOWELS)
+
+# Euclidean acoustic distance
+D_ac = cdist(ac_cent, ac_cent, metric="euclidean")
+
+# Mahalanobis acoustic distance
+try:
+    cov = EmpiricalCovariance().fit(ac)
+    VI  = np.linalg.inv(cov.covariance_)
+    D_mah = cdist(ac_cent, ac_cent, metric="mahalanobis", VI=VI)
+except:
+    D_mah = D_ac.copy()
+
+# Cosine neural distances
+D_wh = cosine_distances(w_cent)
+D_xl = cosine_distances(x_cent)
+
+def mantel(D1, D2):
+    idx = np.triu_indices(D1.shape[0], k=1)
+    r, p = spearmanr(D1[idx], D2[idx])
+    return round(r,3), round(p,4)
+
+print("\n--- Inter-phoneme Distance Mantel Tests ---")
+print(f"  Acoustic(Eucl) vs Whisper: r={mantel(D_ac,D_wh)[0]} p={mantel(D_ac,D_wh)[1]}")
+print(f"  Acoustic(Eucl) vs XLS-R:  r={mantel(D_ac,D_xl)[0]} p={mantel(D_ac,D_xl)[1]}")
+print(f"  Whisper vs XLS-R:         r={mantel(D_wh,D_xl)[0]} p={mantel(D_wh,D_xl)[1]}")
+print(f"  Acoustic(Mah)  vs Whisper: r={mantel(D_mah,D_wh)[0]} p={mantel(D_mah,D_wh)[1]}")
+print(f"  Acoustic(Mah)  vs XLS-R:  r={mantel(D_mah,D_xl)[0]} p={mantel(D_mah,D_xl)[1]}")
+
+# Bootstrap CIs on selected phoneme pairs
+print("\n--- Bootstrap CIs on Distance (speaker-level, B=500) ---")
+PAIRS = [("e","i"), ("o","u"), ("u","y")]
+speakers = dv.speaker_id.values
+np.random.seed(42)
+
+for p1, p2 in PAIRS:
+    for name, arr in [("Acoustic",ac),("Whisper",w_arr),("XLS-R",x_arr)]:
+        boot = []
+        for _ in range(500):
+            spks = np.unique(speakers)
+            sampled = np.random.choice(spks, len(spks), replace=True)
+            idx = np.concatenate([np.where(speakers==s)[0] for s in sampled])
+            sub = arr[idx]; sub_labs = labs[idx]
+            if (sub_labs==p1).sum()<2 or (sub_labs==p2).sum()<2:
+                continue
+            c1 = sub[sub_labs==p1].mean(axis=0)
+            c2 = sub[sub_labs==p2].mean(axis=0)
+            if name=="Acoustic":
+                boot.append(np.linalg.norm(c1-c2))
+            else:
+                boot.append(cosine_distances([c1],[c2])[0,0])
+        lo, hi = np.percentile(boot,[2.5,97.5])
+        print(f"  {p1}/{p2} {name}: [{lo:.4f}, {hi:.4f}]")
+
+# --- Nearest-centroid classifier (leave-one-speaker-out) ---
+print("\n--- Nearest-Centroid Classifier (Leave-One-Speaker-Out) ---")
+groups = dv.speaker_id.values
+logo = LeaveOneGroupOut()
+
+for name, arr in [("Acoustic",ac),("Whisper",w_arr),("XLS-R",x_arr)]:
+    y_true, y_pred = [], []
+    for train_idx, test_idx in logo.split(arr, labs, groups):
+        clf = NearestCentroid()
+        clf.fit(arr[train_idx], labs[train_idx])
+        y_true.extend(labs[test_idx])
+        y_pred.extend(clf.predict(arr[test_idx]))
+    acc = accuracy_score(y_true, y_pred)
+    f1  = f1_score(y_true, y_pred, average="macro")
+    print(f"  {name}: accuracy={acc:.3f} macro-F1={f1:.3f}")
+
+    # confusion matrix
+    cm = confusion_matrix(y_true, y_pred, labels=VOWELS)
+    fig, ax = plt.subplots(figsize=(6,5))
+    sns.heatmap(cm, annot=True, fmt="d", xticklabels=VOWELS,
+                yticklabels=VOWELS, cmap="Blues", ax=ax)
+    ax.set_title(f"Confusion Matrix — {name}")
+    ax.set_xlabel("Predicted"); ax.set_ylabel("True")
+    plt.tight_layout()
+    plt.savefig(f"results/confusion_{name.lower()}.png", dpi=150)
+    plt.close()
+
+print("\nSection 6.2 complete.")
