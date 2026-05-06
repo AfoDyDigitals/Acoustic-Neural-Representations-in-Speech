@@ -78,3 +78,80 @@ for ph in vowels_present:
     print(f"  {ph}: total={total:.3f} inter={inter:.3f} intra={intra:.3f} resid={resid:.3f}")
 
 print("\nAll Stage 6 Section 5.1 outputs saved to results/")
+
+# =============================================================================
+# SECTION 5.2 — Neural Representation Visualisations
+# =============================================================================
+import numpy as np
+
+df = pd.read_csv("data/processed/features_acoustic_norm.csv")
+w_pca = np.load("data/processed/features_whisper_pca.npz")
+x_pca = np.load("data/processed/features_xlsr_pca.npz")
+
+VOWELS_PLOT = ['a','e','i','o','u','y']
+mask = df.phoneme.isin(VOWELS_PLOT)
+
+palette_phoneme = dict(zip(VOWELS_PLOT, sns.color_palette("tab10", len(VOWELS_PLOT))))
+palette_l1      = {"fr":"steelblue","ru":"tomato"}
+palette_gender  = {"f":"orchid","m":"seagreen"}
+
+def plot_pca(coords, labels_dict, title, fname):
+    fig, axes = plt.subplots(1, 3, figsize=(18,5))
+    for ax, (col, palette) in zip(axes, labels_dict.items()):
+        cats = df[col][mask].values
+        for cat in palette:
+            idx = cats == cat
+            ax.scatter(coords[mask][idx,0], coords[mask][idx,1],
+                       c=palette[cat], label=cat, alpha=0.3, s=8)
+        ax.legend(markerscale=2, fontsize=9)
+        ax.set_title(f"Coloured by {col}")
+        ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
+    plt.suptitle(title, fontsize=13)
+    plt.tight_layout()
+    plt.savefig(f"results/{fname}", dpi=150)
+    plt.close()
+    print(f"Saved {fname}")
+
+labels = {"phoneme": palette_phoneme,
+          "l1_status": palette_l1,
+          "gender": palette_gender}
+
+plot_pca(w_pca["layer_low_vis"],  labels, "Whisper Layer 4 — PCA", "pca_whisper_low.png")
+plot_pca(w_pca["layer_high_vis"], labels, "Whisper Layer 20 — PCA", "pca_whisper_high.png")
+plot_pca(x_pca["low_vis"],        labels, "XLS-R Layer 4 — PCA",   "pca_xlsr_low.png")
+plot_pca(x_pca["mid_vis"],        labels, "XLS-R Layer 10 — PCA",  "pca_xlsr_mid.png")
+plot_pca(x_pca["high_vis"],       labels, "XLS-R Layer 18 — PCA",  "pca_xlsr_high.png")
+
+# --- Between-class variance ratio ---
+print("\nBetween-class variance ratio (phoneme) in 2D PCA space:")
+for name, coords in [("Whisper-low", w_pca["layer_low_vis"]),
+                     ("Whisper-high",w_pca["layer_high_vis"]),
+                     ("XLS-R-low",  x_pca["low_vis"]),
+                     ("XLS-R-mid",  x_pca["mid_vis"]),
+                     ("XLS-R-high", x_pca["high_vis"])]:
+    sub = coords[mask]
+    labels_ph = df.phoneme[mask].values
+    grand_mean = sub.mean(axis=0)
+    between = sum([(labels_ph==p).sum() * ((sub[labels_ph==p].mean(axis=0)-grand_mean)**2).sum()
+                   for p in VOWELS_PLOT])
+    total = ((sub - grand_mean)**2).sum()
+    print(f"  {name}: {between/total:.3f}")
+
+# --- Within vs between phoneme cosine similarity ---
+print("\nCosine similarity ratio (within/between phoneme):")
+from sklearn.metrics.pairwise import cosine_similarity
+for name, key in [("Whisper-high","layer_high_clus"),("XLS-R-high","high_clus")]:
+    full = np.load(f"data/processed/features_{'whisper' if 'whisper' in name.lower() else 'xlsr'}_pca.npz")[key]
+    sub = full[mask]
+    labs = df.phoneme[mask].values
+    within, between = [], []
+    for p in VOWELS_PLOT:
+        idx = np.where(labs==p)[0][:50]
+        other = np.where(labs!=p)[0][:50]
+        if len(idx)>1:
+            within.append(cosine_similarity(sub[idx]).mean())
+        if len(other)>1:
+            between.append(cosine_similarity(sub[idx[:10]], sub[other[:10]]).mean())
+    print(f"  {name}: within={np.mean(within):.3f} between={np.mean(between):.3f} ratio={np.mean(within)/np.mean(between):.3f}")
+
+print("\nSection 5.2 complete.")
