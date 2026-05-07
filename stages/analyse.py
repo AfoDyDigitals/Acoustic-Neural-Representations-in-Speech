@@ -487,3 +487,119 @@ for _, row in ci_df.iterrows():
     else: cls = "Indeterminate"
     print(f"    {row.phoneme} {row.feature}: [{lo:.3f},{hi:.3f}] → {cls}")
 print("Section 8 complete.")
+
+# =============================================================================
+# SECTION 9 FIX — Redo clustering with diagonal zeroed
+# =============================================================================
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.metrics import adjusted_rand_score, silhouette_score
+from scipy.cluster.hierarchy import dendrogram, linkage
+from scipy.spatial.distance import squareform
+
+df = pd.read_csv("data/processed/features_acoustic_norm.csv")
+VOWELS = ['a','e','i','o','u','y']
+w_pca = np.load("data/processed/features_whisper_pca.npz")
+x_pca = np.load("data/processed/features_xlsr_pca.npz")
+
+mask = df.phoneme.isin(VOWELS)
+dv = df[mask].copy().reset_index(drop=True)
+labs = dv.phoneme.values
+ac    = dv[["F1_lob","F2_lob"]].values
+w_arr = w_pca["layer_high_clus"][mask.values]
+x_arr = x_pca["high_clus"][mask.values]
+
+def get_centroids(arr, labs, vowels):
+    return np.array([arr[labs==p].mean(axis=0) for p in vowels])
+
+ac_cent = get_centroids(ac,    labs, VOWELS)
+w_cent  = get_centroids(w_arr, labs, VOWELS)
+x_cent  = get_centroids(x_arr, labs, VOWELS)
+
+front_back   = {"i":0,"e":0,"a":0,"u":1,"o":1,"y":0}
+high_mid_low = {"i":0,"u":0,"y":0,"e":1,"o":1,"a":2}
+fb_int  = [front_back[v]   for v in VOWELS]
+hml_int = [high_mid_low[v] for v in VOWELS]
+
+def clean_D(D):
+    D = D.copy(); np.fill_diagonal(D, 0); return D
+
+print("\n--- 9.1 Vowel Clustering ---")
+ari_rows = []
+for name, cent, metric in [("Acoustic",ac_cent,"euclidean"),
+                             ("Whisper", w_cent, "cosine"),
+                             ("XLS-R",   x_cent, "cosine")]:
+    D = clean_D(cdist(cent, cent, metric=metric))
+    c2 = AgglomerativeClustering(n_clusters=2, metric="precomputed", linkage="average").fit(D)
+    c3 = AgglomerativeClustering(n_clusters=3, metric="precomputed", linkage="average").fit(D)
+    ari_fb  = adjusted_rand_score(fb_int,  c2.labels_)
+    ari_hml = adjusted_rand_score(hml_int, c3.labels_)
+    print(f"  {name}: front/back={ari_fb:.3f}  high/mid/low={ari_hml:.3f}")
+    ari_rows.append({"model":name,"ARI_front_back":round(ari_fb,3),"ARI_high_mid_low":round(ari_hml,3)})
+    Z = linkage(squareform(D, checks=False), method="average")
+    fig, ax = plt.subplots(figsize=(7,4))
+    dendrogram(Z, labels=VOWELS, ax=ax)
+    ax.set_title(f"Dendrogram — {name}")
+    plt.tight_layout()
+    plt.savefig(f"results/dendrogram_{name.lower()}.png", dpi=150); plt.close()
+
+pd.DataFrame(ari_rows).to_csv("results/ari_vowels.csv", index=False)
+
+print("\n--- 9.2 Consonants vs Vowels ---")
+CONSONANTS = ['p','t','k','s','f','n']
+all_phones = VOWELS + CONSONANTS
+mask_cv = df.phoneme.isin(all_phones)
+dv_cv   = df[mask_cv].copy().reset_index(drop=True)
+labs_cv = dv_cv.phoneme.values
+ac_cv   = dv_cv[["F1_lob","F2_lob"]].values
+w_cv    = w_pca["layer_high_clus"][mask_cv.values]
+x_cv    = x_pca["high_clus"][mask_cv.values]
+
+for name, arr, metric in [("Acoustic",ac_cv,"euclidean"),
+                           ("Whisper", w_cv, "cosine"),
+                           ("XLS-R",   x_cv, "cosine")]:
+    present = [p for p in all_phones if (labs_cv==p).sum()>0]
+    cent = np.array([arr[labs_cv==p].mean(axis=0) for p in present])
+    true_cv = [0 if p in VOWELS else 1 for p in present]
+    D = clean_D(cdist(cent, cent, metric=metric))
+    clust = AgglomerativeClustering(n_clusters=2, metric="precomputed", linkage="average").fit(D)
+    ari = adjusted_rand_score(true_cv, clust.labels_)
+    print(f"  {name} consonant/vowel ARI={ari:.3f}")
+
+print("\n--- 9.3 Speaker Clustering ---")
+speakers = df.speaker_id.unique()
+for name, arr_full, metric in [
+    ("Acoustic", df[mask][["F1_lob","F2_lob"]].values, "euclidean"),
+    ("Whisper",  w_pca["layer_high_clus"][mask.values], "cosine"),
+    ("XLS-R",    x_pca["high_clus"][mask.values],       "cosine")]:
+    spk_vecs, spk_l1, spk_gender = [], [], []
+    dv_s = df[mask].reset_index(drop=True)
+    for spk in speakers:
+        idx = dv_s.speaker_id==spk
+        if idx.sum()==0: continue
+        ph_vecs = [arr_full[idx.values & (dv_s.phoneme==ph).values].mean(axis=0)
+                   for ph in VOWELS if (idx & (dv_s.phoneme==ph)).sum()>0]
+        if not ph_vecs: continue
+        spk_vecs.append(np.concatenate(ph_vecs))
+        row = dv_s[idx].iloc[0]
+        spk_l1.append(0 if row.l1_status=="fr" else 1)
+        spk_gender.append(0 if row.gender=="f" else 1)
+    X_spk = np.array(spk_vecs)
+    D_spk = clean_D(cdist(X_spk, X_spk, metric=metric if metric=="euclidean" else "cosine"))
+    for true_labs, label in [(spk_l1,"L1/L2"),(spk_gender,"Gender")]:
+        clust = AgglomerativeClustering(n_clusters=2, metric="precomputed", linkage="average").fit(D_spk)
+        ari = adjusted_rand_score(true_labs, clust.labels_)
+        print(f"  {name} {label} ARI={ari:.3f}")
+
+print("\n--- 9.4 Silhouette ---")
+for name, cent, metric in [("Acoustic",ac_cent,"euclidean"),
+                            ("Whisper", w_cent, "cosine"),
+                            ("XLS-R",   x_cent, "cosine")]:
+    D = clean_D(cdist(cent, cent, metric=metric))
+    for k in [2,3]:
+        try:
+            clust = AgglomerativeClustering(n_clusters=k, metric="precomputed", linkage="average").fit(D)
+            sil = silhouette_score(D, clust.labels_, metric="precomputed")
+            print(f"  {name} k={k}: silhouette={sil:.3f}")
+        except: pass
+
+print("Section 9 complete. Pipeline finished.")
